@@ -1,54 +1,48 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 )
 
-// Let's imagine this is our combined Product model
-type Product struct {
-	ID           int
-	Availability string
-	Price        float64
-}
-
 func main() {
 	wg := &sync.WaitGroup{}
-	product := &Product{ID: 1}
 
-	// We need to make two calls.
-	// It's crucial to call Add for *each* goroutine before starting it.
+	// Create a context that will be cancelled after 3 seconds
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel() // Good practice to call cancel, though timeout does it too
 
-	// Goroutine to fetch availability
 	wg.Add(1)
 	go func() {
-		// Always defer Done() immediately inside the goroutine.
-		defer wg.Done()
-		// Simulate network call to a "Products" subgraph
-		fmt.Println("Fetching availability for product 1...")
-		// Pretend GraphQL query: query { product(id:1) { availability } }
-		time.Sleep(100 * time.Millisecond) // Simulate network latency
-		product.Availability = "In Stock"
-		fmt.Println("Availability fetched.")
+		defer wg.Done() // Ensure Done is called
+
+		// Create the request *with the context*. This is key!
+		req, err := http.NewRequestWithContext(ctx, "GET", "http://httpbin.org/delay/10", nil) // 10 sec delay > 3 sec timeout
+		if err != nil {
+			// Note: Error checking context errors might be needed in real code
+			fmt.Println("Error creating request:", err)
+			return
+		}
+
+		fmt.Println("Sending request with context...")
+		resp, err := http.DefaultClient.Do(req)
+		// Now, if the context times out (after 3s), this Do() call will return an error (usually `context.DeadlineExceeded)
+		if err != nil {
+			fmt.Println("Error sending request:", err) // Will likely print context deadline exceeded
+			return
+		}
+		// If we get here, the request finished *before* the timeout
+		defer resp.Body.Close()
+		fmt.Println("Request finished within timeout.")
 	}()
 
-	// Goroutine to fetch price
-	wg.Add(1)
-	go func() {
-		// Defer Done() right away!
-		defer wg.Done()
-		// Simulate network call to a "Pricing" subgraph
-		fmt.Println("Fetching price for product 1...")
-		// Pretend GraphQL query: query { product(id:1) { price } }
-		time.Sleep(150 * time.Millisecond) // Simulate network latency
-		product.Price = 29.99
-		fmt.Println("Price fetched.")
-	}()
-
-	// Wait for both goroutines to complete
-	fmt.Println("Router is waiting for subgraph responses...")
-	wg.Wait() // This blocks until the counter hits zero (both Done() calls have happened)
-
-	fmt.Printf("Successfully fetched data for Product ID %d: %+v\n", product.ID, *product)
+	fmt.Println("Waiting with wg.Wait()...")
+	// Now wg.Wait() is safe. Because the HTTP call respects the context,
+	// the goroutine is guaranteed to finish (either successfully or via context error),
+	// which means defer wg.Done() will eventually run. No leak!
+	wg.Wait()
+	fmt.Println("WaitGroup finished.")
 }
